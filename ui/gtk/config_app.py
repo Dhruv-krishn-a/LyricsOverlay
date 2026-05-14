@@ -24,12 +24,12 @@ PRESETS: dict[str, dict[str, Any]] = {
 class ConfigWindow(Gtk.ApplicationWindow):
     def __init__(self, application: Gtk.Application) -> None:
         super().__init__(application=application, title="LyricFetch Settings")
-        self.set_default_size(720, 900)
+        self.set_default_size(840, 720)
 
-        self.preview_w = 520
-        self.preview_h = 292
-        self.marker_w = 130
-        self.marker_h = 52
+        self.preview_w = 480
+        self.preview_h = 270
+        self.marker_w = 120
+        self.marker_h = 48
         self.marker_x = 0.0
         self.marker_y = 0.0
         self.drag_start_x = 0.0
@@ -45,24 +45,75 @@ class ConfigWindow(Gtk.ApplicationWindow):
             "Lyrics flowing clean on Hyprland",
         ]
 
-        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
-        root.set_margin_top(16)
-        root.set_margin_bottom(16)
-        root.set_margin_start(16)
-        root.set_margin_end(16)
+        # Main Layout
+        root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
+        
+        # HeaderBar
+        header = Gtk.HeaderBar()
+        self.set_titlebar(header)
+        
+        # Main content with Sidebar
+        main_content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
+        self.stack = Gtk.Stack()
+        self.stack.set_transition_type(Gtk.StackTransitionType.SLIDE_LEFT_RIGHT)
+        
+        sidebar = Gtk.StackSidebar()
+        sidebar.set_stack(self.stack)
+        sidebar.set_size_request(180, -1)
+        
+        main_content.append(sidebar)
+        main_content.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_hexpand(True)
+        scroll.set_vexpand(True)
+        scroll.set_child(self.stack)
+        main_content.append(scroll)
+        
+        root.append(main_content)
 
-        header = Gtk.Label()
-        header.set_markup("<b>LyricFetch Overlay Settings</b>")
-        header.set_xalign(0)
-        root.append(header)
+        # Footer
+        footer = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        footer.set_margin_start(16)
+        footer.set_margin_end(16)
+        footer.set_margin_top(12)
+        footer.set_margin_bottom(12)
+        footer.add_css_class("footer-bar")
+        
+        self.status = Gtk.Label(label="All changes saved")
+        self.status.set_xalign(0)
+        self.status.set_hexpand(True)
+        self.status.add_css_class("dim-label")
+        footer.append(self.status)
 
+        reset_btn = Gtk.Button(label="Reset Defaults")
+        reset_btn.add_css_class("destructive-action")
+        reset_btn.connect("clicked", self._on_reset)
+
+        footer.append(reset_btn)
+        root.append(footer)
+
+        # --- Tab: Display ---
+        display_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        display_page.set_margin_top(24)
+        display_page.set_margin_bottom(24)
+        display_page.set_margin_start(24)
+        display_page.set_margin_end(24)
+        
+        # Placement Group
         self.position_combo = self._combo(["free", "top", "bottom"], str(self.config.get("position", "free")))
-        root.append(self._row("Placement Mode", self.position_combo))
-
         monitor_options = self._monitor_options()
         self.monitor_combo = self._combo(monitor_options, str(self.config.get("monitor", "primary")))
-        root.append(self._row("Monitor", self.monitor_combo))
+        self.live_place_switch = Gtk.Switch()
+        self.live_place_switch.set_active(True)
+        
+        display_page.append(self._group("General Display", [
+            self._row("Placement Mode", self.position_combo, "Static preset or free drag"),
+            self._row("Monitor", self.monitor_combo, "Select target display"),
+            self._row("Live Placement", self.live_place_switch, "Update overlay while dragging"),
+        ]))
 
+        # Position Preview Group
         self.preview_fixed = Gtk.Fixed()
         self.preview_fixed.set_size_request(self.preview_w, self.preview_h)
         self.preview_fixed.add_css_class("preview-screen")
@@ -84,17 +135,18 @@ class ConfigWindow(Gtk.ApplicationWindow):
         drag.connect("drag-update", self._on_drag_update)
         drag.connect("drag-end", self._on_drag_end)
         self.marker.add_controller(drag)
-
         self.preview_fixed.put(self.marker, 0, 0)
-        self.preview_hint = Gtk.Label(label="Drag rectangle to place overlay")
-        self.preview_hint.set_xalign(0)
-        self.live_place_switch = Gtk.Switch()
-        self.live_place_switch.set_active(True)
 
-        root.append(self._row("On-Screen Position", self.preview_fixed))
-        root.append(self.preview_hint)
-        root.append(self._row("Live Placement Preview", self.live_place_switch))
+        preview_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        preview_box.set_halign(Gtk.Align.CENTER)
+        preview_box.append(self.preview_fixed)
+        preview_hint = Gtk.Label(label="Drag rectangle to place overlay")
+        preview_hint.add_css_class("dim-label")
+        preview_box.append(preview_hint)
+        
+        display_page.append(self._group("On-Screen Position", [preview_box]))
 
+        # Live Sample Preview Group
         self.sample_frame = Gtk.Frame()
         self.sample_frame.add_css_class("sample-frame")
         sample_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -112,7 +164,51 @@ class ConfigWindow(Gtk.ApplicationWindow):
         sample_box.append(self.sample_curr)
         sample_box.append(self.sample_next)
         self.sample_frame.set_child(sample_box)
-        root.append(self._row("Live Preview", self.sample_frame))
+        
+        display_page.append(self._group("Style Preview", [self.sample_frame]))
+        
+        self.stack.add_titled(display_page, "display", "Display")
+
+        # --- Tab: Typography ---
+        type_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        type_page.set_margin_top(24)
+        type_page.set_margin_bottom(24)
+        type_page.set_margin_start(24)
+        type_page.set_margin_end(24)
+
+        self.font_family = Gtk.Entry()
+        self.font_size = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 14, 96, 1)
+        self.font_weight = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 300, 900, 50)
+        self.line_width = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 35, 95, 1)
+        self.visible_lines = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 11, 1)
+        self.letter_spacing = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -1.0, 4.0, 0.1)
+        self.line_spacing = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.8, 2.0, 0.02)
+
+        for s in [self.font_size, self.font_weight, self.line_width, self.visible_lines, self.letter_spacing, self.line_spacing]:
+            s.set_draw_value(True)
+            s.set_value_pos(Gtk.PositionType.RIGHT)
+
+        type_page.append(self._group("Font", [
+            self._row("Family", self.font_family, "e.g. JetBrains Mono, Sans"),
+            self._row("Size", self.font_size),
+            self._row("Weight", self.font_weight),
+        ]))
+        
+        type_page.append(self._group("Layout", [
+            self._row("Line Width %", self.line_width, "Max width of text area"),
+            self._row("Visible Lines", self.visible_lines, "Number of lines shown"),
+            self._row("Letter Spacing", self.letter_spacing),
+            self._row("Line Spacing", self.line_spacing),
+        ]))
+
+        self.stack.add_titled(type_page, "typography", "Typography")
+
+        # --- Tab: Animation ---
+        anim_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        anim_page.set_margin_top(24)
+        anim_page.set_margin_bottom(24)
+        anim_page.set_margin_start(24)
+        anim_page.set_margin_end(24)
 
         self.preset_combo = self._combo(list(PRESETS.keys()), str(self.config.get("animation_preset", "custom")))
         preset_btn = Gtk.Button(label="Apply Preset")
@@ -120,122 +216,101 @@ class ConfigWindow(Gtk.ApplicationWindow):
         preset_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
         preset_row.append(self.preset_combo)
         preset_row.append(preset_btn)
-        root.append(self._row("Animation Preset", preset_row))
-
-        self.font_size = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 14, 96, 1)
-        self.font_size.set_draw_value(True)
-        root.append(self._row("Font Size", self.font_size))
-
-        self.font_family = Gtk.Entry()
-        root.append(self._row("Font Family", self.font_family))
-
-        self.font_weight = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 300, 900, 50)
-        self.font_weight.set_draw_value(True)
-        root.append(self._row("Font Weight", self.font_weight))
-
-        self.letter_spacing = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -1.0, 4.0, 0.1)
-        self.letter_spacing.set_digits(1)
-        self.letter_spacing.set_draw_value(True)
-        root.append(self._row("Letter Spacing", self.letter_spacing))
-
-        self.line_spacing = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.9, 1.8, 0.02)
-        self.line_spacing.set_digits(2)
-        self.line_spacing.set_draw_value(True)
-        root.append(self._row("Line Spacing", self.line_spacing))
-
-        self.line_width = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 35, 95, 1)
-        self.line_width.set_draw_value(True)
-        root.append(self._row("Line Width %", self.line_width))
-
-        self.visible_lines = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 1, 11, 1)
-        self.visible_lines.set_draw_value(True)
-        root.append(self._row("Visible Line Count", self.visible_lines))
-
-        self.offset = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -2000, 2000, 10)
-        self.offset.set_draw_value(True)
-        root.append(self._row("Sync Offset (ms)", self.offset))
-
-        self.anim_speed = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.05, 2.0, 0.05)
-        self.anim_speed.set_digits(2)
-        self.anim_speed.set_draw_value(True)
-        root.append(self._row("Animation Speed (s)", self.anim_speed))
 
         self.anim_style = self._combo(
             ["crossfade", "line_flow_up", "slide_up", "slide_left_right", "over_up_down"],
             str(self.config.get("animation_style", "slide_up")),
         )
-        root.append(self._row("Animation Style", self.anim_style))
+        self.anim_speed = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.05, 2.0, 0.05)
+        self.anim_speed.set_draw_value(True)
+        self.anim_speed.set_value_pos(Gtk.PositionType.RIGHT)
+
+        anim_page.append(self._group("Presets", [
+            self._row("Animation Preset", preset_row, "Quick config templates"),
+        ]))
+        
+        anim_page.append(self._group("Fine Tuning", [
+            self._row("Style", self.anim_style, "Transition effect"),
+            self._row("Speed (s)", self.anim_speed, "Duration of animation"),
+        ]))
+
+        self.stack.add_titled(anim_page, "animation", "Animation")
+
+        # --- Tab: Appearance ---
+        app_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        app_page.set_margin_top(24)
+        app_page.set_margin_bottom(24)
+        app_page.set_margin_start(24)
+        app_page.set_margin_end(24)
 
         self.color_mode = self._combo(
             ["solid", "bg", "rainbow", "wal", "auto_dynamic"],
             str(self.config.get("color_mode", "solid")),
         )
-        root.append(self._row("Color Mode", self.color_mode))
+        self.highlight = Gtk.Entry()
+        self.secondary = Gtk.Entry()
+        self.fade = Gtk.Entry()
+        self.bg_opacity = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.05, 0.95, 0.01)
+        self.shadow_switch = Gtk.Switch()
+        self.blur_hint = Gtk.Switch()
+
+        self.bg_opacity.set_draw_value(True)
+        self.bg_opacity.set_value_pos(Gtk.PositionType.RIGHT)
+
+        app_page.append(self._group("Color Mode", [
+            self._row("Mode", self.color_mode, "Theme source"),
+        ]))
+        
+        app_page.append(self._group("Colors", [
+            self._row("Highlight", self.highlight, "Active line color"),
+            self._row("Secondary", self.secondary, "Near line color"),
+            self._row("Fade", self.fade, "Distant line color"),
+        ]))
+        
+        app_page.append(self._group("Effects", [
+            self._row("BG Opacity", self.bg_opacity, "For 'bg' and 'dynamic' modes"),
+            self._row("Text Shadow", self.shadow_switch),
+            self._row("Blur Hint", self.blur_hint, "Request Hyprland blur"),
+        ]))
+
+        self.stack.add_titled(app_page, "appearance", "Appearance")
+
+        # --- Tab: Advanced ---
+        adv_page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+        adv_page.set_margin_top(24)
+        adv_page.set_margin_bottom(24)
+        adv_page.set_margin_start(24)
+        adv_page.set_margin_end(24)
 
         self.dynamic_backend = self._combo(
             ["auto", "grim"],
             str(self.config.get("dynamic_sampling_backend", "auto")),
         )
-        root.append(self._row("Dynamic Backend", self.dynamic_backend))
-
         self.dynamic_interval = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 120, 1200, 20)
-        self.dynamic_interval.set_draw_value(True)
-        root.append(self._row("Dynamic Interval (ms)", self.dynamic_interval))
-
         self.dynamic_hysteresis = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.05, 1.5, 0.05)
-        self.dynamic_hysteresis.set_digits(2)
-        self.dynamic_hysteresis.set_draw_value(True)
-        root.append(self._row("Dynamic Hysteresis (contrast)", self.dynamic_hysteresis))
-
         self.dynamic_panel_boost = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.0, 0.5, 0.01)
-        self.dynamic_panel_boost.set_digits(2)
-        self.dynamic_panel_boost.set_draw_value(True)
-        root.append(self._row("Dynamic Panel Boost", self.dynamic_panel_boost))
-
-        self.bg_opacity = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0.05, 0.95, 0.01)
-        self.bg_opacity.set_digits(2)
-        self.bg_opacity.set_draw_value(True)
-        root.append(self._row("BG Opacity (bg mode)", self.bg_opacity))
-
-        self.highlight = Gtk.Entry()
-        root.append(self._row("Highlight Color", self.highlight))
-
-        self.secondary = Gtk.Entry()
-        root.append(self._row("Secondary Color", self.secondary))
-
-        self.fade = Gtk.Entry()
-        root.append(self._row("Fade Color", self.fade))
-
-        self.shadow_switch = Gtk.Switch()
-        root.append(self._row("Text Shadow", self.shadow_switch))
-
+        self.offset = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, -2000, 2000, 10)
         self.hide_no_lyrics = Gtk.Switch()
-        root.append(self._row("Hide If No Lyrics", self.hide_no_lyrics))
+        self.hide_on_pause = Gtk.Switch()
 
-        self.blur_hint = Gtk.Switch()
-        root.append(self._row("BG Blur Hint (Hypr)", self.blur_hint))
+        for s in [self.dynamic_interval, self.dynamic_hysteresis, self.dynamic_panel_boost, self.offset]:
+            s.set_draw_value(True)
+            s.set_value_pos(Gtk.PositionType.RIGHT)
 
-        self.status = Gtk.Label(label="Changes are applied to config/config.json")
-        self.status.set_xalign(0)
-        root.append(self.status)
+        adv_page.append(self._group("Dynamic Sampling", [
+            self._row("Backend", self.dynamic_backend, "Capture method"),
+            self._row("Interval (ms)", self.dynamic_interval, "Sampling frequency"),
+            self._row("Hysteresis", self.dynamic_hysteresis, "Color change threshold"),
+            self._row("Panel Boost", self.dynamic_panel_boost, "Extra contrast for background"),
+        ]))
+        
+        adv_page.append(self._group("Behavior", [
+            self._row("Sync Offset (ms)", self.offset, "Adjust lyrics timing"),
+            self._row("Hide if Empty", self.hide_no_lyrics, "Auto-hide when no lyrics"),
+            self._row("Hide on Pause", self.hide_on_pause, "Hide overlay when playback is paused"),
+        ]))
 
-        buttons = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        apply_btn = Gtk.Button(label="Apply")
-        save_btn = Gtk.Button(label="Save")
-        reset_btn = Gtk.Button(label="Reset Defaults")
-
-        apply_btn.connect("clicked", self._on_apply)
-        save_btn.connect("clicked", self._on_save)
-        reset_btn.connect("clicked", self._on_reset)
-
-        buttons.append(apply_btn)
-        buttons.append(save_btn)
-        buttons.append(reset_btn)
-        root.append(buttons)
-
-        scroll = Gtk.ScrolledWindow()
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_child(root)
+        self.stack.add_titled(adv_page, "advanced", "Advanced")
 
         self._preview_css = Gtk.CssProvider()
         self._apply_styles()
@@ -244,7 +319,7 @@ class ConfigWindow(Gtk.ApplicationWindow):
         self._tick_preview()
         GLib.timeout_add(1400, self._tick_preview)
 
-        self.set_child(scroll)
+        self.set_child(root)
 
     def _monitor_options(self) -> list[str]:
         options = ["primary"]
@@ -292,6 +367,44 @@ class ConfigWindow(Gtk.ApplicationWindow):
   border-radius: 10px;
   padding: 10px;
 }
+.boxed-list {
+  background-color: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+}
+.boxed-list row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px 12px;
+}
+.boxed-list row:last-child {
+  border-bottom: none;
+}
+.heading {
+  font-weight: 600;
+  font-size: 1.05em;
+}
+.caption {
+  font-size: 0.88em;
+  opacity: 0.7;
+}
+.dim-label {
+  opacity: 0.6;
+}
+.footer-bar {
+  background-color: rgba(255, 255, 255, 0.02);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+stacksidebar list {
+  background: transparent;
+}
+stacksidebar row {
+  padding: 10px 16px;
+  border-radius: 8px;
+  margin: 2px 8px;
+}
+stacksidebar row:selected {
+  background-color: rgba(255, 255, 255, 0.1);
+}
 """
         )
         Gtk.StyleContext.add_provider_for_display(
@@ -302,33 +415,58 @@ class ConfigWindow(Gtk.ApplicationWindow):
         )
 
     def _connect_preview_watchers(self) -> None:
+        self._auto_save_id = 0
         controls = [
             self.font_size,
             self.font_weight,
             self.letter_spacing,
             self.line_spacing,
-            self.bg_opacity,
+            self.line_width,
             self.visible_lines,
+            self.offset,
+            self.anim_speed,
+            self.anim_style,
             self.color_mode,
             self.dynamic_backend,
             self.dynamic_interval,
             self.dynamic_hysteresis,
             self.dynamic_panel_boost,
+            self.bg_opacity,
             self.highlight,
             self.secondary,
             self.fade,
             self.shadow_switch,
+            self.hide_no_lyrics,
+            self.hide_on_pause,
+            self.blur_hint,
             self.font_family,
+            self.position_combo,
+            self.monitor_combo,
         ]
         for c in controls:
             if isinstance(c, Gtk.Scale):
-                c.connect("value-changed", lambda *_: self._refresh_preview_style())
+                c.connect("value-changed", self._on_control_changed)
             elif isinstance(c, Gtk.Entry):
-                c.connect("changed", lambda *_: self._refresh_preview_style())
+                c.connect("changed", self._on_control_changed)
             elif isinstance(c, Gtk.DropDown):
-                c.connect("notify::selected", lambda *_: self._refresh_preview_style())
+                c.connect("notify::selected", self._on_control_changed)
             elif isinstance(c, Gtk.Switch):
-                c.connect("notify::active", lambda *_: self._refresh_preview_style())
+                c.connect("notify::active", self._on_control_changed)
+
+    def _on_control_changed(self, *args: Any) -> None:
+        self._refresh_preview_style()
+        self.status.set_text("Saving changes...")
+        if self._auto_save_id:
+            GLib.source_remove(self._auto_save_id)
+        self._auto_save_id = GLib.timeout_add(350, self._perform_auto_save)
+
+    def _perform_auto_save(self) -> bool:
+        self._auto_save_id = 0
+        cfg = load_config()
+        cfg.update(self._collect())
+        save_config(cfg)
+        self.status.set_text("All changes saved")
+        return False
 
     def _tick_preview(self) -> bool:
         self._preview_idx = (self._preview_idx + 1) % len(self._preview_lines)
@@ -389,11 +527,50 @@ class ConfigWindow(Gtk.ApplicationWindow):
         dd.set_selected(idx)
         return dd
 
-    def _row(self, label: str, widget: Gtk.Widget) -> Gtk.Box:
-        row = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    def _group(self, title: str, rows: list[Gtk.Widget]) -> Gtk.Box:
+        group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        
+        if title:
+            lbl = Gtk.Label()
+            lbl.set_markup(f"<span weight='bold' size='large'>{title}</span>")
+            lbl.set_xalign(0)
+            lbl.set_margin_start(4)
+            group.append(lbl)
+            
+        listbox = Gtk.ListBox()
+        listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        listbox.add_css_class("boxed-list")
+        
+        for row_widget in rows:
+            listbox.append(row_widget)
+            
+        group.append(listbox)
+        return group
+
+    def _row(self, label: str, widget: Gtk.Widget, description: str | None = None) -> Gtk.Box:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        
+        vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        vbox.set_hexpand(True)
+        vbox.set_valign(Gtk.Align.CENTER)
+        
         lbl = Gtk.Label(label=label)
         lbl.set_xalign(0)
-        row.append(lbl)
+        lbl.add_css_class("heading")
+        vbox.append(lbl)
+        
+        if description:
+            desc_lbl = Gtk.Label(label=description)
+            desc_lbl.set_xalign(0)
+            desc_lbl.add_css_class("caption")
+            vbox.append(desc_lbl)
+            
+        row.append(vbox)
+        
+        widget.set_valign(Gtk.Align.CENTER)
+        if isinstance(widget, (Gtk.Scale, Gtk.Entry, Gtk.DropDown)):
+            widget.set_size_request(240, -1)
+            
         row.append(widget)
         return row
 
@@ -501,6 +678,7 @@ class ConfigWindow(Gtk.ApplicationWindow):
             "fade_color": self.fade.get_text().strip() or "#9aa0a6",
             "show_shadow": self.shadow_switch.get_active(),
             "hide_when_no_lyrics": self.hide_no_lyrics.get_active(),
+            "hide_on_pause": self.hide_on_pause.get_active(),
             "bg_blur_hint": self.blur_hint.get_active(),
         }
 
@@ -555,6 +733,7 @@ class ConfigWindow(Gtk.ApplicationWindow):
         self.fade.set_text(str(cfg.get("fade_color", "#9aa0a6")))
         self.shadow_switch.set_active(bool(cfg.get("show_shadow", True)))
         self.hide_no_lyrics.set_active(bool(cfg.get("hide_when_no_lyrics", False)))
+        self.hide_on_pause.set_active(bool(cfg.get("hide_on_pause", False)))
         self.blur_hint.set_active(bool(cfg.get("bg_blur_hint", True)))
 
         self._pct_to_marker(int(cfg.get("render_x_pct", 50)), int(cfg.get("render_y_pct", 85)))
@@ -565,12 +744,6 @@ class ConfigWindow(Gtk.ApplicationWindow):
         cfg.update(self._collect())
         save_config(cfg)
         self.status.set_text(label)
-
-    def _on_apply(self, _button: Gtk.Button) -> None:
-        self._save_current("Applied. Overlay updates automatically.")
-
-    def _on_save(self, _button: Gtk.Button) -> None:
-        self._save_current("Saved to config/config.json")
 
     def _on_reset(self, _button: Gtk.Button) -> None:
         save_config(dict(DEFAULT_CONFIG))

@@ -27,6 +27,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "dynamic_hysteresis": 0.3,
     "dynamic_panel_boost": 0.0,
     "hide_when_no_lyrics": False,
+    "hide_on_pause": False,
     "animation_speed": 0.2,
     "animation_style": "slide_up",
     "animation_preset": "custom",

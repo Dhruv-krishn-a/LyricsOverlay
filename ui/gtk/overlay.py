@@ -190,10 +190,12 @@ class OverlayWindow(Gtk.ApplicationWindow):
                 lbl.set_xalign(0.5)
                 lbl.set_justify(Gtk.Justification.CENTER)
 
-    def _paint_labels(self, labels: list[Gtk.Label], lines: list[str], current_index: int) -> None:
+    def _paint_labels(self, labels: list[Gtk.Label], lines: list[str], current_index: int, word_index: int = -1) -> None:
+        highlight_color = self._style_state.get("highlight_color", "#ffffff")
+        fade_color = self._style_state.get("fade_color", "#9aa0a6")
+
         for i, lbl in enumerate(labels):
             txt = lines[i] if i < len(lines) else ""
-            lbl.set_label(txt)
             lbl.remove_css_class("line-current")
             lbl.remove_css_class("line-near")
             lbl.remove_css_class("line-far")
@@ -202,15 +204,56 @@ class OverlayWindow(Gtk.ApplicationWindow):
             lbl.remove_css_class("line-next-near")
             lbl.remove_css_class("line-prev-far")
             lbl.remove_css_class("line-next-far")
+            
             distance = abs(i - current_index)
+            
+            if txt == "---INSTRUMENTAL---":
+                lbl.set_use_markup(False)
+                if distance == 0:
+                    t = time.time()
+                    dots = ["♪", "♫", "♬"]
+                    dot = dots[int(t * 2) % 3]
+                    lbl.set_label(f"~ {dot} ~")
+                    lbl.add_css_class("line-current")
+                else:
+                    lbl.set_label("~ ♪ ~")
+                    if distance == 1:
+                        lbl.add_css_class("line-near")
+                    elif distance == 2:
+                        lbl.add_css_class("line-far")
+                    else:
+                        lbl.add_css_class("line-dim")
+                continue
+            
             if distance == 0:
                 lbl.add_css_class("line-current")
-            elif distance == 1:
-                    lbl.add_css_class("line-near")
-            elif distance == 2:
-                lbl.add_css_class("line-far")
+                if word_index >= 0 and txt:
+                    words = txt.split()
+                    if 0 <= word_index < len(words):
+                        # Construct Pango markup for highlighted and unhighlighted words
+                        highlighted = " ".join(words[:word_index + 1])
+                        remaining = " ".join(words[word_index + 1:])
+                        # Escape XML characters
+                        highlighted = highlighted.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        remaining = remaining.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                        
+                        markup = f"<span color='{highlight_color}'>{highlighted}</span>"
+                        if remaining:
+                            markup += f" <span color='{fade_color}'>{remaining}</span>"
+                        lbl.set_markup(markup)
+                    else:
+                        lbl.set_label(txt)
+                else:
+                    lbl.set_label(txt)
             else:
-                lbl.add_css_class("line-dim")
+                lbl.set_use_markup(False)
+                lbl.set_label(txt)
+                if distance == 1:
+                    lbl.add_css_class("line-near")
+                elif distance == 2:
+                    lbl.add_css_class("line-far")
+                else:
+                    lbl.add_css_class("line-dim")
 
     def _flow_step(self) -> int:
         font_size = int(self._style_state.get("font_size", 34))
@@ -284,6 +327,7 @@ class OverlayWindow(Gtk.ApplicationWindow):
         current_index: int,
         transition: str | None,
         repaint_only: bool,
+        word_index: int = -1,
     ) -> None:
         self._ensure_line_labels(len(lines))
         if not lines:
@@ -295,7 +339,7 @@ class OverlayWindow(Gtk.ApplicationWindow):
         center_y = self._flow_center_y(step)
         self.flow_area.set_size_request(self._overlay_w, self._overlay_h)
 
-        self._paint_labels(self.flow_labels, lines, current_index)
+        self._paint_labels(self.flow_labels, lines, current_index, word_index)
 
         target_pos: list[tuple[float, float]] = []
         target_opacity: list[float] = []
@@ -357,13 +401,13 @@ class OverlayWindow(Gtk.ApplicationWindow):
         self._flow_anim_duration_ms = max(260, min(520, self._flow_anim_duration_ms))        
         self._flow_anim_source_id = GLib.timeout_add(12, self._tick_flow_animation)
 
-    def _render_lines(self, lines: list[str], current_index: int) -> None:
+    def _render_lines(self, lines: list[str], current_index: int, word_index: int = -1) -> None:
         if not lines:
             lines = [""]
             current_index = 0
         self._ensure_line_labels(len(lines))
         current_index = max(0, min(current_index, len(lines) - 1))
-        sig = (tuple(lines), current_index)
+        sig = (tuple(lines), current_index, word_index)
         if sig == self._flow_last_signature:
             return
         self._flow_last_signature = sig
@@ -376,12 +420,13 @@ class OverlayWindow(Gtk.ApplicationWindow):
                 flow.render_index,
                 flow.transition,
                 flow.repaint_only,
+                word_index
             )
             self._last_curr = current_text
             return
 
         self._stop_flow_animation()
-        self._paint_labels(self.flow_labels, lines, current_index)
+        self._paint_labels(self.flow_labels, lines, current_index, word_index)
         step = self._flow_step()
         center_y = self._flow_center_y(step)
         self.flow_area.set_size_request(self._overlay_w, self._overlay_h)
@@ -973,6 +1018,8 @@ window {{
             curr_idx = lines.index(curr_line) if curr_line in lines else min(1, len(lines) - 1)
         playback_state = str(payload.get("playback_state", "Stopped"))
         ms_to_next = int(payload.get("ms_to_next_line", 0))
+        word_index = int(payload.get("current_word_index", -1))
+
         if self._animation_style == "line_flow_up" and ms_to_next > 0:
             # Base duration (stable, readable)
             base = 320
@@ -988,7 +1035,7 @@ window {{
 
             self._flow_anim_duration_ms = dur
 
-        self._render_lines(lines, curr_idx)
+        self._render_lines(lines, curr_idx, word_index)
         self.revealer.set_reveal_child(playback_state != "Stopped")
 
     def _read_state_once(self) -> None:

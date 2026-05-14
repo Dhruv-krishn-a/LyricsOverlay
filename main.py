@@ -88,6 +88,7 @@ def _build_empty_payload(config: dict[str, Any]) -> dict[str, Any]:
         "visible_line_count": int(config.get("visible_line_count", 3)),
         "show_shadow": bool(config.get("show_shadow", True)),
         "hide_when_no_lyrics": bool(config.get("hide_when_no_lyrics", False)),
+        "hide_on_pause": bool(config.get("hide_on_pause", False)),
         "bg_blur_hint": bool(config.get("bg_blur_hint", True)),
     }
 
@@ -108,6 +109,7 @@ def daemon_loop(debug_terminal: bool = False) -> None:
             interval_sec = max(0.05, float(cfg.get("update_interval_ms", 100)) / 1000.0)
             retry_sec = max(2.0, float(cfg.get("retry_interval_sec", 8)))
             hide_when_no_lyrics = bool(cfg.get("hide_when_no_lyrics", False))
+            hide_on_pause = bool(cfg.get("hide_on_pause", False))
             visible_line_count = max(1, int(cfg.get("visible_line_count", 3)))
             fetch_status = "ok"
 
@@ -155,11 +157,24 @@ def daemon_loop(debug_terminal: bool = False) -> None:
                     state.lyrics, position, visible_line_count
                 )
                 _, _, next_t, progress = sync_engine.get_timing_info(state.lyrics, position)
+                
+                # Word and Timing Info
+                idx, curr_t, next_t, progress = sync_engine.get_timing_info(state.lyrics, position)
+                
+                word_idx = -1
+                if state.lyrics and 0 <= idx < len(state.lyrics):
+                    current_line_obj = state.lyrics[idx]
+                    word_idx, _ = sync_engine.get_word_info(current_line_obj, position, next_t)
+                
                 ms_to_next = int(max(0.0, ((next_t - position) * 1000.0))) if next_t is not None else 0
+
                 lyrics_available = bool(state.lyrics)
                 has_synced = bool(state.lyrics and state.lyrics_source.endswith("lrc"))
 
                 display_visible = True
+                if hide_on_pause and track.status == "Paused":
+                    display_visible = False
+
                 if not lyrics_available:
                     if hide_when_no_lyrics:
                         display_visible = False
@@ -193,6 +208,7 @@ def daemon_loop(debug_terminal: bool = False) -> None:
                         "next_line": next_,
                         "window_lines": window_lines,
                         "current_window_index": current_window_index,
+                        "current_word_index": word_idx,
                         "line_progress": round(progress, 4),
                         "ms_to_next_line": ms_to_next,
                         "display_visible": display_visible,
