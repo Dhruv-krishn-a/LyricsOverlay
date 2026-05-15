@@ -32,10 +32,6 @@ class PlayerService:
     BRACKET_RE = re.compile(r"\s*[\(\[][^\)\]]*(official|video|lyrics?|audio|hd|4k)[^\)\]]*[\)\]]\s*$", re.IGNORECASE)
 
     def __init__(self) -> None:
-        self.manager = Playerctl.PlayerManager()
-        self.manager.connect("name-appeared", self._on_name_appeared)
-        self.manager.connect("player-vanished", self._on_player_vanished)
-
         self._active_player: Playerctl.Player | None = None
         self._players: dict[Playerctl.PlayerName, Playerctl.Player] = {}
 
@@ -45,13 +41,27 @@ class PlayerService:
         self._last_update_time = time.monotonic()
 
         # Start a GLib main loop in a background thread to handle DBus events
-        self._loop = GLib.MainLoop()
-        self._thread = threading.Thread(target=self._loop.run, daemon=True)
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
+        
+        # Wait until the manager is initialized by the background thread
+        while not hasattr(self, 'manager'):
+            time.sleep(0.01)
+
+    def _run_loop(self) -> None:
+        context = GLib.MainContext.new()
+        context.push_thread_default()
+        
+        self.manager = Playerctl.PlayerManager()
+        self.manager.connect("name-appeared", self._on_name_appeared)
+        self.manager.connect("player-vanished", self._on_player_vanished)
 
         # Initialize existing players
         for name in self.manager.props.player_names:
             self._init_player(name)
+            
+        loop = GLib.MainLoop.new(context, False)
+        loop.run()
 
     def _init_player(self, name: Playerctl.PlayerName) -> None:
         player = Playerctl.Player.new_from_name(name)

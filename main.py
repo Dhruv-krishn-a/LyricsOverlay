@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+import ctypes
+import os
+
+# FIX: When launched from systemd, PyGObject linking order breaks gtk4-layer-shell.
+# We explicitly load it globally before any GTK imports to fix this.
+try:
+    ctypes.CDLL("libgtk4-layer-shell.so", os.RTLD_GLOBAL)
+except OSError:
+    pass
+
 import argparse
 from datetime import datetime, timezone
 import os

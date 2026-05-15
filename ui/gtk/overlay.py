@@ -18,9 +18,15 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
 gi.require_version("Pango", "1.0")
-gi.require_version("Gtk4LayerShell", "1.0")
 
-from gi.repository import GLib, Gdk, Gtk, Gtk4LayerShell, Pango
+try:
+    gi.require_version("Gtk4LayerShell", "1.0")
+    from gi.repository import Gtk4LayerShell
+    HAS_LAYER_SHELL = True
+except (ValueError, ImportError):
+    HAS_LAYER_SHELL = False
+
+from gi.repository import GLib, Gdk, Gtk, Pango
 
 from core.config import load_config
 from core.event_bus import StateBusClient
@@ -36,21 +42,27 @@ class OverlayWindow(Gtk.ApplicationWindow):
         self.set_can_target(False)
         self.set_default_size(1, 1)
 
-        Gtk4LayerShell.init_for_window(self)
-        display = Gdk.Display.get_default()
-        display_name = display.get_name() if display else "none"
-        self.layer_shell_supported = bool(Gtk4LayerShell.is_supported())
-        if not self.layer_shell_supported:
-            print(
-                "Warning: gtk4-layer-shell reports unsupported "
-                f"(display={display_name}, GDK_BACKEND={os.environ.get('GDK_BACKEND', '')}). "
-                "Window may behave like a normal toplevel."
-            )
-
-        Gtk4LayerShell.set_namespace(self, "lyricfetch")
-        Gtk4LayerShell.set_layer(self, Gtk4LayerShell.Layer.OVERLAY)
-        Gtk4LayerShell.set_exclusive_zone(self, 0)
-        Gtk4LayerShell.set_keyboard_mode(self, Gtk4LayerShell.KeyboardMode.NONE)
+        if HAS_LAYER_SHELL:
+            Gtk4LayerShell.init_for_window(self)
+            display = Gdk.Display.get_default()
+            display_name = display.get_name() if display else "none"
+            self.layer_shell_supported = bool(Gtk4LayerShell.is_supported())
+            if not self.layer_shell_supported:
+                print(
+                    "Warning: gtk4-layer-shell reports unsupported "
+                    f"(display={display_name}, GDK_BACKEND={os.environ.get('GDK_BACKEND', '')}). "
+                    "Window may behave like a normal toplevel."
+                )
+            else:
+                Gtk4LayerShell.set_namespace(self, "lyricfetch")
+                Gtk4LayerShell.set_layer(self, Gtk4LayerShell.Layer.OVERLAY)
+                Gtk4LayerShell.set_exclusive_zone(self, 0)
+                Gtk4LayerShell.set_keyboard_mode(self, Gtk4LayerShell.KeyboardMode.NONE)
+        else:
+            self.layer_shell_supported = False
+            print("Warning: gtk4-layer-shell not installed. Falling back to standard GTK window hints.")
+            # For X11 or unsupported wayland compositors
+            self.add_css_class("fallback-window")
 
         self._cfg_mtime = 0.0
         self._state_mtime = 0.0
@@ -71,6 +83,7 @@ class OverlayWindow(Gtk.ApplicationWindow):
         self._last_dynamic_apply = 0.0
         self._is_sampling = False
         self._has_grim = bool(shutil.which("grim"))
+        self._has_maim = bool(shutil.which("maim"))
         self._dynamic_fail_count = 0
         self._visible_line_count = 3
         self._last_window_signature: tuple[tuple[str, ...], int] | None = None
@@ -613,7 +626,7 @@ class OverlayWindow(Gtk.ApplicationWindow):
                     selected = e
                     break
 
-        if hasattr(Gtk4LayerShell, "set_monitor"):
+        if self.layer_shell_supported and hasattr(Gtk4LayerShell, "set_monitor"):
             try:
                 Gtk4LayerShell.set_monitor(self, selected[1])
             except Exception:
@@ -626,23 +639,25 @@ class OverlayWindow(Gtk.ApplicationWindow):
         return selected[2], selected[3]
 
     def _set_anchors_free(self, x_margin: int, y_margin: int) -> None:
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, False)
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, max(0, x_margin))
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, max(0, y_margin))
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.RIGHT, 0)
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.BOTTOM, 0)
-
-    def _apply_anchors(self, position: str, x_pct: int, y_pct: int, monitor_w: int, monitor_h: int) -> None:
-        if position == "top":
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, False)
+        if self.layer_shell_supported:
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
             Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
             Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
             Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, False)
-            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, 36)
-            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, 0)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, max(0, x_margin))
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, max(0, y_margin))
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.RIGHT, 0)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.BOTTOM, 0)
+
+    def _apply_anchors(self, position: str, x_pct: int, y_pct: int, monitor_w: int, monitor_h: int) -> None:
+        if position == "top":
+            if self.layer_shell_supported:
+                Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, False)
+                Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
+                Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
+                Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, False)
+                Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, 36)
+                Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, 0)
             self._set_text_align_mode("center")
             self.root.set_valign(Gtk.Align.START)
             left = (monitor_w - self._overlay_w) // 2
@@ -650,12 +665,13 @@ class OverlayWindow(Gtk.ApplicationWindow):
             return
 
         if position == "bottom":
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, False)
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, False)
-            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, True)
-            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.BOTTOM, 36)
-            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, 0)
+            if self.layer_shell_supported:
+                Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, False)
+                Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
+                Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, False)
+                Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, True)
+                Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.BOTTOM, 36)
+                Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, 0)
             self._set_text_align_mode("center")
             self.root.set_valign(Gtk.Align.END)
             left = (monitor_w - self._overlay_w) // 2
@@ -676,15 +692,16 @@ class OverlayWindow(Gtk.ApplicationWindow):
         x_margin = int(edge_padding + usable_w * x_ratio)
         y_margin = int(edge_padding + usable_h * y_ratio)
 
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
-        Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, False)
+        if self.layer_shell_supported:
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.LEFT, True)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.RIGHT, False)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.TOP, True)
+            Gtk4LayerShell.set_anchor(self, Gtk4LayerShell.Edge.BOTTOM, False)
 
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, x_margin)
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, y_margin)
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.RIGHT, 0)
-        Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.BOTTOM, 0)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.LEFT, x_margin)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.TOP, y_margin)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.RIGHT, 0)
+            Gtk4LayerShell.set_margin(self, Gtk4LayerShell.Edge.BOTTOM, 0)
 
         self._set_text_align_mode("center")
         self.root.set_valign(Gtk.Align.START)
@@ -800,8 +817,8 @@ class OverlayWindow(Gtk.ApplicationWindow):
 
     def _sample_background_luma(self) -> float | None:
         backend = self._dynamic_backend
-        if backend in {"auto", "grim"}:
-            if self._has_grim:
+        if backend in {"auto", "grim", "maim"}:
+            if self._has_grim or self._has_maim:
                 ox, oy = self._monitor_origin
                 x, y, w, h = self._region_rect
                 # With no dynamic panel boost we can sample the exact region for best relevance.
@@ -816,7 +833,11 @@ class OverlayWindow(Gtk.ApplicationWindow):
                 gx = max(0, ox + x - pad)
                 gy = max(0, oy + y - pad)
                 try:
-                    cmd_stdout = ["grim", "-g", f"{gx},{gy} {sw}x{sh}", "-t", "ppm", "-"]
+                    if self._has_grim:
+                        cmd_stdout = ["grim", "-g", f"{gx},{gy} {sw}x{sh}", "-t", "ppm", "-"]
+                    else: # has_maim
+                        cmd_stdout = ["maim", "-g", f"{sw}x{sh}+{gx}+{gy}", "-f", "ppm"]
+                        
                     proc = subprocess.run(cmd_stdout, capture_output=True, timeout=0.7, check=False)
                     if proc.returncode == 0 and proc.stdout:
                         ex = None if pad == 0 else (pad, pad, max(1, w), max(1, h))
@@ -824,17 +845,19 @@ class OverlayWindow(Gtk.ApplicationWindow):
                         if l is not None:
                             self._dynamic_fail_count = 0
                             return l
-                    # Fallback path for compositors/setups where stdout ppm is flaky.
-                    with NamedTemporaryFile(suffix=".ppm") as tmp:
-                        cmd_file = ["grim", "-g", f"{gx},{gy} {sw}x{sh}", "-t", "ppm", tmp.name]
-                        proc2 = subprocess.run(cmd_file, capture_output=True, timeout=0.9, check=False)
-                        if proc2.returncode == 0:
-                            data = Path(tmp.name).read_bytes()
-                            ex = None if pad == 0 else (pad, pad, max(1, w), max(1, h))
-                            l = self._parse_ppm_luma(data, exclude_rect=ex)
-                            if l is not None:
-                                self._dynamic_fail_count = 0
-                                return l
+                    
+                    if self._has_grim:
+                        # Fallback path for compositors/setups where stdout ppm is flaky.
+                        with NamedTemporaryFile(suffix=".ppm") as tmp:
+                            cmd_file = ["grim", "-g", f"{gx},{gy} {sw}x{sh}", "-t", "ppm", tmp.name]
+                            proc2 = subprocess.run(cmd_file, capture_output=True, timeout=0.9, check=False)
+                            if proc2.returncode == 0:
+                                data = Path(tmp.name).read_bytes()
+                                ex = None if pad == 0 else (pad, pad, max(1, w), max(1, h))
+                                l = self._parse_ppm_luma(data, exclude_rect=ex)
+                                if l is not None:
+                                    self._dynamic_fail_count = 0
+                                    return l
                 except Exception:
                     pass
                 self._dynamic_fail_count += 1
@@ -1194,8 +1217,7 @@ window {{
             self._update_toast(track_key, title, artist, album_art_url)
             
         if not has_player:
-            self._render_lines(["No active player"], 0)
-            self.revealer.set_reveal_child(True)
+            self.revealer.set_reveal_child(False)
             return
 
         if not display_visible:
