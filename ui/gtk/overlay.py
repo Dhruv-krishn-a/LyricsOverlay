@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import threading
 import time
+import urllib.request
 from tempfile import NamedTemporaryFile
 from typing import Any
 
@@ -67,6 +69,7 @@ class OverlayWindow(Gtk.ApplicationWindow):
         self._dynamic_base_bg_opacity = 0.62
         self._style_state: dict[str, Any] = {}
         self._last_dynamic_apply = 0.0
+        self._is_sampling = False
         self._has_grim = bool(shutil.which("grim"))
         self._dynamic_fail_count = 0
         self._visible_line_count = 3
@@ -103,8 +106,54 @@ class OverlayWindow(Gtk.ApplicationWindow):
         self.revealer.set_transition_duration(220)
         self.revealer.set_reveal_child(True)
         self.revealer.set_child(self.flow_area)
+
+        # Now Playing Toast
+        self.toast_revealer = Gtk.Revealer()
+        self.toast_revealer.set_transition_type(Gtk.RevealerTransitionType.SLIDE_DOWN)
+        self.toast_revealer.set_transition_duration(400)
+        self.toast_revealer.set_reveal_child(False)
+        self.toast_revealer.set_halign(Gtk.Align.CENTER)
+        self.toast_revealer.set_valign(Gtk.Align.START)
+        
+        self.toast_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        self.toast_box.add_css_class("toast-box")
+        self.toast_box.set_margin_bottom(12)
+        
+        self.toast_art = Gtk.Image()
+        self.toast_art.set_pixel_size(48)
+        self.toast_art.add_css_class("toast-art")
+        
+        toast_text_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
+        toast_text_box.set_valign(Gtk.Align.CENTER)
+        self.toast_title = Gtk.Label(xalign=0.0)
+        self.toast_title.add_css_class("toast-title")
+        self.toast_artist = Gtk.Label(xalign=0.0)
+        self.toast_artist.add_css_class("toast-artist")
+        toast_text_box.append(self.toast_title)
+        toast_text_box.append(self.toast_artist)
+        
+        self.toast_box.append(self.toast_art)
+        self.toast_box.append(toast_text_box)
+        self.toast_revealer.set_child(self.toast_box)
+
+        # Custom Visualizer
+        self.visualizer = Gtk.DrawingArea()
+        self.visualizer.set_size_request(240, 40)
+        self.visualizer.set_draw_func(self._draw_visualizer)
+        self.visualizer.set_opacity(0.0)
+        self.flow_area.put(self.visualizer, 0, 0)
+        self.visualizer_active = False
+        self.visualizer_y = 0.0
+        self.visualizer_opacity = 0.0
+
+        self.root.append(self.toast_revealer)
         self.root.append(self.revealer)
         self.set_child(self.root)
+
+        self._toast_timeout_id = 0
+        self._current_track_key = ""
+        self._art_cache_dir = Path.home() / ".cache" / "lyrics-overlay" / "art"
+        self._art_cache_dir.mkdir(parents=True, exist_ok=True)
 
         self.css = Gtk.CssProvider()
         Gtk.StyleContext.add_provider_for_display(
@@ -125,9 +174,51 @@ class OverlayWindow(Gtk.ApplicationWindow):
         GLib.timeout_add(150, self._poll_config)
         GLib.timeout_add(250, self._poll_state)
         GLib.timeout_add(120, self._dynamic_tick)
+        GLib.timeout_add(30, self._visualizer_tick)
+
+    def _visualizer_tick(self) -> bool:
+        if self.visualizer_active:
+            self.visualizer_opacity = min(1.0, self.visualizer_opacity + 0.1)
+            self.visualizer.queue_draw()
+        elif self.visualizer_opacity > 0.0:
+            self.visualizer_opacity = max(0.0, self.visualizer_opacity - 0.1)
+            self.visualizer.queue_draw()
+        return True
 
     def _on_realize(self, _widget: Gtk.Widget) -> None:
         GLib.idle_add(self._apply_clickthrough_once)
+
+    def _draw_visualizer(self, area: Gtk.DrawingArea, cr: cairo.Context, width: int, height: int) -> None:
+        if not self.visualizer_active and self.visualizer_opacity <= 0.01:
+            return
+
+        t = time.time() * 2.5
+        cy = height / 2.0
+        
+        # Get dynamic colors from style state
+        highlight_hex = self._style_state.get("highlight_color", "#ffffff").lstrip("#")
+        try:
+            r = int(highlight_hex[0:2], 16) / 255.0
+            g = int(highlight_hex[2:4], 16) / 255.0
+            b = int(highlight_hex[4:6], 16) / 255.0
+        except:
+            r, g, b = 1.0, 1.0, 1.0
+
+        cr.set_line_width(2.5)
+        
+        # Draw 3 overlapping waves
+        for wave_idx in range(3):
+            cr.set_source_rgba(r, g, b, self.visualizer_opacity * (1.0 - wave_idx * 0.3))
+            cr.move_to(0, cy)
+            
+            for x in range(0, width, 4):
+                # Complex sine wave formula
+                freq = 0.05 + wave_idx * 0.02
+                amp = (height / 3.0) * math.sin(t * 0.5 + wave_idx)
+                y = cy + math.sin(x * freq + t + wave_idx * 2) * amp * math.sin(x * 0.01)
+                cr.line_to(x, y)
+                
+            cr.stroke()
 
     def _on_close(self, _widget: Gtk.Widget) -> bool:
         self._stop_bus = True
@@ -194,6 +285,8 @@ class OverlayWindow(Gtk.ApplicationWindow):
         highlight_color = self._style_state.get("highlight_color", "#ffffff")
         fade_color = self._style_state.get("fade_color", "#9aa0a6")
 
+        is_any_visualizer_active = False
+
         for i, lbl in enumerate(labels):
             txt = lines[i] if i < len(lines) else ""
             lbl.remove_css_class("line-current")
@@ -209,20 +302,9 @@ class OverlayWindow(Gtk.ApplicationWindow):
             
             if txt == "---INSTRUMENTAL---":
                 lbl.set_use_markup(False)
+                lbl.set_label("")
                 if distance == 0:
-                    t = time.time()
-                    dots = ["♪", "♫", "♬"]
-                    dot = dots[int(t * 2) % 3]
-                    lbl.set_label(f"~ {dot} ~")
-                    lbl.add_css_class("line-current")
-                else:
-                    lbl.set_label("~ ♪ ~")
-                    if distance == 1:
-                        lbl.add_css_class("line-near")
-                    elif distance == 2:
-                        lbl.add_css_class("line-far")
-                    else:
-                        lbl.add_css_class("line-dim")
+                    is_any_visualizer_active = True
                 continue
             
             if distance == 0:
@@ -254,6 +336,8 @@ class OverlayWindow(Gtk.ApplicationWindow):
                     lbl.add_css_class("line-far")
                 else:
                     lbl.add_css_class("line-dim")
+
+        self.visualizer_active = is_any_visualizer_active
 
     def _flow_step(self) -> int:
         font_size = int(self._style_state.get("font_size", 34))
@@ -307,6 +391,12 @@ class OverlayWindow(Gtk.ApplicationWindow):
             lbl.set_opacity(max(0.0, min(1.0, op)))
             self._flow_pos[i] = (x, y)
             self._flow_current_opacity[i] = op
+            
+            # If visualizer is active on this label, move it with the label
+            if self.visualizer_active and lbl.get_text() == "":
+                vx = (self._overlay_w - 240) // 2
+                vy = int(y) - (40 - self._flow_step()) // 2
+                self.flow_area.move(self.visualizer, vx, vy)
 
         if t >= 1.0:
             for i, lbl in enumerate(self.flow_labels):
@@ -316,6 +406,10 @@ class OverlayWindow(Gtk.ApplicationWindow):
                 lbl.set_opacity(max(0.0, min(1.0, to)))
                 self._flow_pos[i] = (tx, ty)
                 self._flow_current_opacity[i] = to
+                if self.visualizer_active and lbl.get_text() == "":
+                    vx = (self._overlay_w - 240) // 2
+                    vy = int(round(ty)) - (40 - self._flow_step()) // 2
+                    self.flow_area.move(self.visualizer, vx, vy)
             self._flow_anim_source_id = 0
             return False
 
@@ -361,6 +455,11 @@ class OverlayWindow(Gtk.ApplicationWindow):
                 lbl.set_opacity(op)
                 self._flow_pos[i] = (x, y)
                 self._flow_current_opacity[i] = op
+                
+                if self.visualizer_active and lbl.get_text() == "":
+                    vx = (self._overlay_w - 240) // 2
+                    vy = int(round(y)) - (40 - self._flow_step()) // 2
+                    self.flow_area.move(self.visualizer, vx, vy)
             return
 
         direction = 1 if transition == "up" else -1 if transition == "down" else 0
@@ -377,6 +476,11 @@ class OverlayWindow(Gtk.ApplicationWindow):
                 lbl.set_opacity(op)
                 self._flow_pos[i] = (x, y)
                 self._flow_current_opacity[i] = op
+                
+                if self.visualizer_active and lbl.get_text() == "":
+                    vx = (self._overlay_w - 240) // 2
+                    vy = int(round(y)) - (40 - self._flow_step()) // 2
+                    self.flow_area.move(self.visualizer, vx, vy)
             return
 
         self._stop_flow_animation()
@@ -438,6 +542,11 @@ class OverlayWindow(Gtk.ApplicationWindow):
             lbl.set_opacity(op)
             self._flow_pos[i] = (0.0, y)
             self._flow_current_opacity[i] = op
+            
+            if self.visualizer_active and lbl.get_text() == "":
+                vx = (self._overlay_w - 240) // 2
+                vy = int(round(y)) - (40 - self._flow_step()) // 2
+                self.flow_area.move(self.visualizer, vx, vy)
 
         self._last_curr = current_text
 
@@ -736,13 +845,28 @@ class OverlayWindow(Gtk.ApplicationWindow):
     def _dynamic_tick(self) -> bool:
         if not self._dynamic_enabled:
             return True
+        if self._is_sampling:
+            return True
+            
         now = time.monotonic()
         if (now - self._last_dynamic_apply) * 1000.0 < self._dynamic_interval_ms:
             return True
+            
         self._last_dynamic_apply = now
-        luma = self._sample_background_luma()
+        self._is_sampling = True
+        
+        def run_sampler():
+            luma = self._sample_background_luma()
+            GLib.idle_add(self._apply_luma, luma)
+            
+        threading.Thread(target=run_sampler, daemon=True).start()
+        return True
+
+    def _apply_luma(self, luma: float | None) -> bool:
+        self._is_sampling = False
         if luma is None:
-            return True
+            return False
+            
         # Choose theme by strongest WCAG-style contrast against sampled background.
         contrast_black = (luma + 0.05) / 0.05
         contrast_white = 1.05 / (luma + 0.05)
@@ -758,32 +882,21 @@ class OverlayWindow(Gtk.ApplicationWindow):
             self._dynamic_theme = next_theme
             if self._style_state:
                 st = dict(self._style_state)
+                st["panel_bg_css"] = "background: transparent;"
+                st["panel_border_css"] = "border: none;"
+                
                 if next_theme == "dark-on-light":
                     st["highlight_color"] = "#11161d"
                     st["secondary_color"] = "#273449"
                     st["fade_color"] = "#3b4b60"
-                    if self._dynamic_panel_boost > 0.01:
-                        st["panel_bg_css"] = (
-                            f"background: rgba(242, 246, 252, {min(0.96, self._dynamic_base_bg_opacity + self._dynamic_panel_boost):.3f});"
-                        )
-                        st["panel_border_css"] = "border: 1px solid rgba(0,0,0,0.18);"
-                    else:
-                        st["panel_bg_css"] = "background: transparent;"
-                        st["panel_border_css"] = "border: none;"
                 else:
                     st["highlight_color"] = "#f4f7fb"
                     st["secondary_color"] = "#c8d8ea"
                     st["fade_color"] = "#9aafc6"
-                    if self._dynamic_panel_boost > 0.01:
-                        st["panel_bg_css"] = (
-                            f"background: rgba(16, 20, 28, {min(0.96, self._dynamic_base_bg_opacity + self._dynamic_panel_boost):.3f});"
-                        )
-                        st["panel_border_css"] = "border: 1px solid rgba(255,255,255,0.18);"
-                    else:
-                        st["panel_bg_css"] = "background: transparent;"
-                        st["panel_border_css"] = "border: none;"
+                self._style_state = st
+                self._flow_last_signature = None
                 self._render_css(st)
-        return True
+        return False
 
     def _render_css(self, st: dict[str, Any]) -> None:
         shadow = st.get("shadow", "")
@@ -873,6 +986,29 @@ window {{
   opacity: 1.0;
   {shadow}
   {st.get("current_gradient", "")}
+}}
+.toast-box {{
+  background: rgba(20, 24, 32, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 8px 16px;
+}}
+.toast-title {{
+  color: {st["highlight_color"]};
+  font-size: {max(12, int(st["font_size"] * 0.5))}px;
+  font-family: '{st["font_family"]}';
+  font-weight: 700;
+  {shadow}
+}}
+.toast-artist {{
+  color: {st["fade_color"]};
+  font-size: {max(10, int(st["font_size"] * 0.4))}px;
+  font-family: '{st["font_family"]}';
+  font-weight: 500;
+  {shadow}
+}}
+.toast-art {{
+  border-radius: 6px;
 }}
 """
         self.css.load_from_data(css_text.encode("utf-8"))
@@ -967,13 +1103,8 @@ window {{
             panel_bg_css = f"background: rgba({panel_r}, {panel_g}, {panel_b}, {bg_opacity:.3f});"
             panel_border_css = "border: 1px solid rgba(255,255,255,0.16);"
         elif color_mode == "auto_dynamic":
-            # Initial default until sampler updates: text-only unless panel boost requested.
-            if dynamic_panel_boost > 0.01:
-                panel_bg_css = f"background: rgba(16, 20, 28, {min(0.96, bg_opacity + dynamic_panel_boost):.3f});"
-                panel_border_css = "border: 1px solid rgba(255,255,255,0.18);"
-            else:
-                panel_bg_css = "background: transparent;"
-                panel_border_css = "border: none;"
+            panel_bg_css = "background: transparent;"
+            panel_border_css = "border: none;"
             highlight_color, secondary_color, fade_color = ("#f4f7fb", "#c8d8ea", "#9aafc6")
 
         self._style_state = {
@@ -992,9 +1123,76 @@ window {{
         }
         self._render_css(self._style_state)
 
+    def _fetch_album_art(self, track_key: str, art_url: str) -> None:
+        if not art_url:
+            return
+        
+        safe_key = "".join(c for c in track_key if c.isalnum() or c in (' ', '.', '_')).rstrip()
+        cache_path = self._art_cache_dir / f"{safe_key}.jpg"
+        
+        if not cache_path.exists():
+            try:
+                # Remove file:// prefix if it's a local file (Spotify often sends local paths)
+                if art_url.startswith("file://"):
+                    local_path = art_url[7:]
+                    if os.path.exists(local_path):
+                        shutil.copy(local_path, cache_path)
+                else:
+                    req = urllib.request.Request(art_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=3.0) as response, open(cache_path, 'wb') as out_file:
+                        shutil.copyfileobj(response, out_file)
+            except Exception as e:
+                print(f"LyricFetch: Failed to fetch art {art_url}: {e}")
+                return
+                
+        GLib.idle_add(self._apply_album_art, str(cache_path))
+
+    def _apply_album_art(self, path: str) -> bool:
+        if os.path.exists(path):
+            self.toast_art.set_from_file(path)
+        return False
+
+    def _hide_toast(self) -> bool:
+        self.toast_revealer.set_reveal_child(False)
+        self._toast_timeout_id = 0
+        return False
+
+    def _update_toast(self, track_key: str, title: str, artist: str, album_art_url: str) -> None:
+        if track_key == self._current_track_key:
+            return
+            
+        self._current_track_key = track_key
+        
+        self.toast_title.set_label(title)
+        
+        markup_artist = f"<span size='small'>{artist}</span>"
+        self.toast_artist.set_markup(markup_artist)
+        
+        # Clear previous art
+        self.toast_art.clear()
+        
+        if album_art_url:
+            thread = threading.Thread(target=self._fetch_album_art, args=(track_key, album_art_url), daemon=True)
+            thread.start()
+
+        self.toast_revealer.set_reveal_child(True)
+        
+        if self._toast_timeout_id:
+            GLib.source_remove(self._toast_timeout_id)
+        self._toast_timeout_id = GLib.timeout_add(5000, self._hide_toast)
+
     def _apply_state_payload(self, payload: dict[str, Any]) -> None:
         has_player = bool(payload.get("has_player", False))
         display_visible = bool(payload.get("display_visible", True))
+        
+        track_key = str(payload.get("track_key", ""))
+        title = str(payload.get("title", ""))
+        artist = str(payload.get("artist", ""))
+        album_art_url = str(payload.get("album_art", ""))
+        
+        if has_player and track_key:
+            self._update_toast(track_key, title, artist, album_art_url)
+            
         if not has_player:
             self._render_lines(["No active player"], 0)
             self.revealer.set_reveal_child(True)

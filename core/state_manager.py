@@ -12,18 +12,21 @@ class AppState:
     title: str = ""
     artist: str = ""
     album: str = ""
+    album_art: str = ""
     player: str = ""
     playback_state: str = "Stopped"
     lyrics: list[LyricLine] = field(default_factory=list)
     lyrics_source: str = ""
     lyrics_loaded_at: float = 0.0
     lyrics_last_attempt_at: float = 0.0
+    fetch_status: str = "idle"
 
-    def set_track(self, track_key: str, title: str, artist: str, album: str, player: str) -> None:
+    def set_track(self, track_key: str, title: str, artist: str, album: str, album_art: str, player: str) -> None:
         self.track_key = track_key
         self.title = title
         self.artist = artist
         self.album = album
+        self.album_art = album_art
         self.player = player
 
     def set_lyrics(self, lyrics: list[LyricLine], source: str) -> None:

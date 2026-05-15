@@ -100,16 +100,32 @@ class LyricsService:
         except requests.RequestException:
             return None
 
-    def fetch(self, title: str, artist: str, album: str = "") -> Optional[LyricsResult]:
+    def fetch(self, title: str, artist: str, album: str = "", duration_sec: float = 0.0) -> Optional[LyricsResult]:
         for v_title, v_artist in self._variants(title, artist):
             cached = self._read_cache(v_artist, v_title)
-            if cached:
+            if cached and cached.synced:
                 return cached
+
+        # If we have a cached plain version, we'll still search for synced,
+        # but keep it as a fallback.
+        fallback_plain = None
+        fallback_artist = ""
+        fallback_title = ""
+
+        for v_title, v_artist in self._variants(title, artist):
+            cached = self._read_cache(v_artist, v_title)
+            if cached and cached.plain and not fallback_plain:
+                fallback_plain = cached
+                fallback_artist = v_artist
+                fallback_title = v_title
 
         for v_title, v_artist in self._variants(title, artist):
             params = {"track_name": v_title, "artist_name": v_artist}
             if album:
                 params["album_name"] = album
+            if duration_sec > 0:
+                params["duration"] = str(int(duration_sec))
+                
             response = self._http_get("https://lrclib.net/api/get", params=params)
             if not response or response.status_code != 200:
                 continue
@@ -119,8 +135,13 @@ class LyricsService:
                 continue
             result = self._extract_payload(payload)
             if result:
-                self._write_cache(v_artist, v_title, result.synced, result.plain)
-                return result
+                if result.synced:
+                    self._write_cache(v_artist, v_title, result.synced, result.plain)
+                    return result
+                elif result.plain and not fallback_plain:
+                    fallback_plain = result
+                    fallback_artist = v_artist
+                    fallback_title = v_title
 
         for v_title, v_artist in self._variants(title, artist):
             params = {"track_name": v_title, "artist_name": v_artist}
@@ -133,12 +154,42 @@ class LyricsService:
                 continue
             if not isinstance(payload, list):
                 continue
+                
+            # Sort payload by duration difference to prefer closest match if duration is known
+            if duration_sec > 0:
+                def get_duration_diff(item: dict) -> float:
+                    item_duration = item.get("duration")
+                    if item_duration is None:
+                        return float('inf')
+                    return abs(item_duration - duration_sec)
+                payload.sort(key=get_duration_diff)
+                
             for item in payload:
                 if not isinstance(item, dict):
                     continue
                 result = self._extract_payload(item)
-                if result:
+                if result and result.synced:
                     self._write_cache(v_artist, v_title, result.synced, result.plain)
                     return result
+                    
+            if not fallback_plain:
+                # If no synced lyrics found, look for plain in the search results
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    result = self._extract_payload(item)
+                    if result and result.plain:
+                        fallback_plain = result
+                        fallback_artist = v_artist
+                        fallback_title = v_title
+                        break
+            
+            if fallback_plain:
+                break # We did a search and found something
+
+        if fallback_plain:
+            if fallback_artist and fallback_title:
+                self._write_cache(fallback_artist, fallback_title, fallback_plain.synced, fallback_plain.plain)
+            return fallback_plain
 
         return None

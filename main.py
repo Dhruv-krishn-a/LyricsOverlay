@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 import time
 from typing import Any
 
@@ -49,6 +50,7 @@ def _build_empty_payload(config: dict[str, Any]) -> dict[str, Any]:
         "title": "",
         "artist": "",
         "album": "",
+        "album_art": "",
         "track_key": "",
         "playback_state": "Stopped",
         "position_sec": 0.0,
@@ -128,28 +130,54 @@ def daemon_loop(debug_terminal: bool = False) -> None:
 
                 state.playback_state = track.status
                 if track.track_key != state.track_key:
-                    state.set_track(track.track_key, track.title, track.artist, track.album, track.player)
+                    state.set_track(track.track_key, track.title, track.artist, track.album, track.album_art, track.player)
                     state.set_lyrics([], "")
                     state.mark_lyrics_attempt()
-                    lyrics = lyrics_service.fetch(track.title, track.artist, track.album)
-                    if lyrics:
-                        if lyrics.synced:
-                            state.set_lyrics(sync_engine.parse_lrc(lyrics.synced), lyrics.source)
-                        elif lyrics.plain:
-                            state.set_lyrics(sync_engine.build_unsynced(lyrics.plain), lyrics.source)
-                    else:
-                        fetch_status = "lyrics-not-found"
+                    state.fetch_status = "fetching"
 
-                if not state.lyrics and (time.time() - state.lyrics_last_attempt_at) >= retry_sec:
+                    def _do_fetch(t_key, t_title, t_artist, t_album, t_duration):
+                        lyr = lyrics_service.fetch(t_title, t_artist, t_album, t_duration)
+                        if state.track_key == t_key:
+                            if lyr:
+                                if lyr.synced:
+                                    state.set_lyrics(sync_engine.parse_lrc(lyr.synced), lyr.source)
+                                elif lyr.plain:
+                                    state.set_lyrics(sync_engine.build_unsynced(lyr.plain), lyr.source)
+                                state.fetch_status = "ok"
+                            else:
+                                state.fetch_status = "lyrics-not-found"
+
+                    threading.Thread(
+                        target=_do_fetch,
+                        args=(track.track_key, track.title, track.artist, track.album, track.duration_sec),
+                        daemon=True
+                    ).start()
+                    fetch_status = state.fetch_status
+
+                elif not state.lyrics and state.fetch_status != "fetching" and (time.time() - state.lyrics_last_attempt_at) >= retry_sec:
                     state.mark_lyrics_attempt()
-                    lyrics = lyrics_service.fetch(track.title, track.artist, track.album)
-                    if lyrics:
-                        if lyrics.synced:
-                            state.set_lyrics(sync_engine.parse_lrc(lyrics.synced), lyrics.source)
-                        elif lyrics.plain:
-                            state.set_lyrics(sync_engine.build_unsynced(lyrics.plain), lyrics.source)
-                    else:
-                        fetch_status = "retry-miss"
+                    state.fetch_status = "fetching"
+                    
+                    def _do_retry(t_key, t_title, t_artist, t_album, t_duration):
+                        lyr = lyrics_service.fetch(t_title, t_artist, t_album, t_duration)
+                        if state.track_key == t_key:
+                            if lyr:
+                                if lyr.synced:
+                                    state.set_lyrics(sync_engine.parse_lrc(lyr.synced), lyr.source)
+                                elif lyr.plain:
+                                    state.set_lyrics(sync_engine.build_unsynced(lyr.plain), lyr.source)
+                                state.fetch_status = "ok"
+                            else:
+                                state.fetch_status = "retry-miss"
+                                
+                    threading.Thread(
+                        target=_do_retry,
+                        args=(track.track_key, track.title, track.artist, track.album, track.duration_sec),
+                        daemon=True
+                    ).start()
+                    fetch_status = state.fetch_status
+                else:
+                    fetch_status = state.fetch_status
 
                 position = max(0.0, track.position_sec + offset_sec)
                 prev, curr, next_ = sync_engine.get_context(state.lyrics, position)
@@ -184,7 +212,12 @@ def daemon_loop(debug_terminal: bool = False) -> None:
                         window_lines = []
                         current_window_index = 0
                     else:
-                        curr = "No lyrics available"
+                        if state.fetch_status == "fetching":
+                            curr = "Fetching lyrics..."
+                        elif state.fetch_status == "lyrics-not-found":
+                            curr = "No lyrics found"
+                        else:
+                            curr = "No lyrics available"
                         window_lines = [curr]
                         current_window_index = 0
 
@@ -196,6 +229,7 @@ def daemon_loop(debug_terminal: bool = False) -> None:
                         "title": track.title,
                         "artist": track.artist,
                         "album": track.album,
+                        "album_art": track.album_art,
                         "track_key": track.track_key,
                         "playback_state": track.status,
                         "position_sec": round(position, 3),

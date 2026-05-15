@@ -497,11 +497,7 @@ stacksidebar row:selected {
             op = float(self.bg_opacity.get_value())
             panel = f"background: rgba(18,22,28,{op:.3f}); border: 1px solid rgba(255,255,255,0.18); border-radius: 10px;"
         elif color_mode == "auto_dynamic":
-            if dynamic_panel_boost > 0.01:
-                op = min(0.96, float(self.bg_opacity.get_value()) + dynamic_panel_boost)
-                panel = f"background: rgba(16,20,28,{op:.3f}); border: 1px solid rgba(255,255,255,0.18); border-radius: 10px;"
-            else:
-                panel = "background: transparent; border: none;"
+            panel = "background: transparent; border: none;"
             highlight = "#f4f7fb"
             secondary = "#c8d8ea"
             fade = "#9aafc6"
